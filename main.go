@@ -1,9 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -20,13 +24,15 @@ func main() {
 
 	handler := newHandler(db)
 
-	r := gin.New()
+	r := gin.Default()
 
-	r.GET("/books", handler.listBooksHandler)
+	r.POST("/login", loginHandler)
 
-	r.POST("/books", handler.createBookHandler)
+	protected := r.Group("/", authorizationMiddleware)
 
-	r.DELETE("/books/:id", handler.deleteBookHandler)
+	protected.GET("/books", handler.listBooksHandler)
+	protected.POST("/books", handler.createBookHandler)
+	protected.DELETE("/books/:id", handler.deleteBookHandler)
 
 	r.Run()
 
@@ -44,6 +50,53 @@ type Book struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Author string `json:"author"`
+}
+
+func validateToken(token string) error {
+
+	_, err := jwt.Parse(token, func(t *jwt.Token) (interface{}, error) {
+
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+
+		return []byte("MySignature"), nil
+
+	})
+
+	return err
+}
+
+func loginHandler(c *gin.Context) {
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, &jwt.StandardClaims{
+		ExpiresAt: time.Now().Add(5 * time.Minute).Unix(),
+	})
+
+	ss, err := token.SignedString([]byte("MySignature"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token": ss,
+	})
+
+}
+
+func authorizationMiddleware(c *gin.Context) {
+
+	s := c.Request.Header.Get("Authorization")
+
+	token := strings.TrimPrefix(s, "Bearer ")
+
+	if err := validateToken(token); err != nil {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
+
 }
 
 func (h *Handler) listBooksHandler(c *gin.Context) {
